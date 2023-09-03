@@ -1,0 +1,128 @@
+version: '3.4'
+
+networks:
+  grafana-stack:
+
+services:
+  minio:
+    image: minio/minio
+    entrypoint: [""]
+    command: ["sh", "-c", "mkdir -p /data/mimir && mkdir -p /data/loki-data && mkdir -p /data/loki-ruler && minio server --quiet /data --address ':9000' --console-address ':9001'"]
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=supersecret
+    volumes:
+      - /volume1/docker/grafana/minio/data:/data
+    expose:
+      - 9000
+      - 9001
+    networks:
+      - grafana-stack
+
+  grafana:
+    image: grafana/grafana:9.5.2
+    pull_policy: always
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true #Do not use in production!
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin #Do not use in production!
+      - GF_USERS_DEFAULT_THEME=light
+      - GF_LOG_MODE=console
+      - GF_LOG_LEVEL=critical
+    volumes:
+      - /volume1/docker/grafana/grafana/data:/var/lib/grafana
+      - /volume1/docker/grafana/grafana/config/grafana-provisioning-dashboards.yaml:/etc/grafana/provisioning/dashboards/provisioning-dashboards.yaml:ro
+      - /volume1/docker/grafana/grafana/config/grafana-provisioning-datasources.yaml:/etc/grafana/provisioning/datasources/provisioning-datasources.yaml:ro
+      - /volume1/docker/grafana/grafana/dashboards/synology.json:/var/lib/grafana/dashboards/synology.json
+      - /volume1/docker/grafana/grafana/dashboards/linux.json:/var/lib/grafana/dashboards/linux.json
+    expose:
+      - 3000
+    user: root #Bad practice, only used for testing purposes
+    networks:
+      - grafana-stack
+
+  load-balancer:
+    image: nginx:latest
+    volumes:
+      - /volume1/docker/grafana/nginx/config/nginx-monolithic.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - 9009:9009
+      - 3000:3000
+      - 3100:3100
+    networks:
+      - grafana-stack
+
+  mimir-1:
+    image: grafana/mimir:2.9.0
+    command: ["-config.file=/etc/mimir.yaml"]
+    hostname: mimir-1
+    depends_on:
+      - minio
+    volumes:
+      - /volume1/docker/grafana/mimir/config/mimir-monolithic.yaml:/etc/mimir.yaml
+      - /volume1/docker/grafana/mimir/config/alertmanager-fallback-config.yaml:/etc/alertmanager-fallback-config.yaml
+      - /volume1/docker/grafana/mimir/data/mimir-1:/data
+    expose:
+      - 8080
+      - 7946
+    networks:
+      - grafana-stack
+
+  # mimir-2:
+  #   image: grafana/mimir:2.8.0
+  #   command: ["-config.file=/etc/mimir.yaml"]
+  #   hostname: mimir-2
+  #   depends_on:
+  #     - minio
+  #   volumes:
+  #     - /volume1/docker/grafana/mimir/config/mimir-monolithic.yaml:/etc/mimir.yaml
+  #     - /volume1/docker/grafana/mimir/config/alertmanager-fallback-config.yaml:/etc/alertmanager-fallback-config.yaml
+  #     - /volume1/docker/grafana/mimir/data/mimir-2:/data
+  #   expose:
+  #     - 8080
+  #     - 7946
+  #   networks:
+  #     - grafana-stack
+
+  loki-1:
+    image: grafana/loki:2.7.6-amd64
+    command: "-config.file=/etc/loki/config.yaml"
+    hostname: loki-1
+    depends_on:
+      - minio
+    volumes:
+      - /volume1/docker/grafana/loki/config/loki-monolithic.yaml:/etc/loki/config.yaml
+    expose:
+      - 3100
+      - 7946
+      - 9095
+    networks:
+      - grafana-stack
+
+  # loki-2:
+  #   image: grafana/loki:2.7.6-amd64
+  #   command: "-config.file=/etc/loki/config.yaml"
+  #   hostname: loki-2
+  #   depends_on:
+  #     - minio
+  #   volumes:
+  #     - /volume1/docker/grafana/loki/config/loki-monolithic.yaml:/etc/loki/config.yaml
+  #   expose:
+  #     - 3100
+  #     - 7946
+  #     - 9095
+  #   networks:
+  #     - grafana-stack
+
+  agent:
+    image: grafana/agent:v0.34.0
+    hostname: grafana-agent
+    depends_on:
+      - mimir-1
+      - loki-1
+    volumes:
+      - /volume1/docker/grafana/agent/data/linux:/etc/agent/data
+      - /volume1/docker/grafana/agent/config/linux/agent.yaml:/etc/agent/agent.yaml 
+      - /volume1/docker/grafana/agent/config/snmp.yaml:/etc/agent/snmp.yaml 
+      - /var/log/synobootup.log:/var/log/synobootup.log:ro #This provides the container with some recent logs to scrape
+    networks:
+      - grafana-stack
